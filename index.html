@@ -322,11 +322,20 @@
 
   <div class="card">
     <div class="card-title">拍攝血壓計</div>
-    <button class="capture-btn" onclick="document.getElementById('camera-input').click()">
-      <span class="icon">📷</span>
-      <span>拍照量測</span>
-    </button>
+    <div style="display:flex;gap:10px">
+      <button class="capture-btn" style="flex:2" onclick="document.getElementById('camera-input').click()">
+        <span class="icon">📷</span>
+        <span>拍照量測</span>
+      </button>
+      <button class="capture-btn" style="flex:1;background:linear-gradient(135deg,#2b6cb0,#2c5282);box-shadow:0 4px 20px rgba(43,108,176,0.35)" onclick="document.getElementById('upload-input').click()">
+        <span class="icon" style="font-size:1.2rem">🖼️</span>
+        <span style="font-size:0.82rem">上傳</span>
+      </button>
+    </div>
+    <!-- 拍照：強制開相機 -->
     <input type="file" id="camera-input" accept="image/*" capture="environment" onchange="handlePhoto(this)">
+    <!-- 上傳：從相簿選取 -->
+    <input type="file" id="upload-input" accept="image/*" onchange="handlePhoto(this)">
   </div>
 
   <!-- 載入中 -->
@@ -467,8 +476,14 @@ async function handlePhoto(input) {
   // 顯示預覽
   const reader = new FileReader();
   reader.onload = e => {
-    document.getElementById('preview-img').src = e.target.result;
+    const dataUrl = e.target.result;
+    document.getElementById('preview-img').src = dataUrl;
     document.getElementById('preview-img').style.display = 'block';
+
+    // 若是拍照（camera-input），自動儲存到手機相簿
+    const isCameraCapture = document.getElementById('camera-input').files.length > 0 &&
+                             document.getElementById('camera-input').files[0] === file;
+    if (isCameraCapture) savePhotoToAlbum(dataUrl);
   };
   reader.readAsDataURL(file);
 
@@ -490,7 +505,7 @@ async function handlePhoto(input) {
         body: JSON.stringify({
           contents: [{
             parts: [
-              { text: '這是血壓計的照片。請只回傳以下格式，不要加任何其他文字：\n高壓:XXX\n低壓:XXX\n脈搏:XXX\n（XXX 替換成數字，如果看不清楚任何數字請回傳：無法識別）' },
+              { text: '這是血壓計的照片，請找出收縮壓（高壓/最高/SYS）、舒張壓（低壓/最低/DIA）、脈搏（心跳/脈拍/PR/脈搏）的數值。請只回傳以下格式，完全不要加其他文字：\nSYS:數字\nDIA:數字\nPUL:數字\n例如：SYS:120\nDIA:80\nPUL:72\n如果看不清楚請回傳：ERROR' },
               { inline_data: { mime_type: file.type || 'image/jpeg', data: b64 } }
             ]
           }],
@@ -501,16 +516,19 @@ async function handlePhoto(input) {
     const data = await resp.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-    if (text.includes('無法識別') || !text.includes('高壓')) {
-      throw new Error('無法識別血壓數值，請重新拍攝');
+    if (text.includes('ERROR') || text.includes('無法識別') || !text.match(/\d{2,3}/)) {
+      throw new Error('無法識別血壓數值，請確保畫面清晰、光線充足');
     }
 
-    // 解析數值
-    const sysMatch = text.match(/高壓[：:](\d+)/);
-    const diaMatch = text.match(/低壓[：:](\d+)/);
-    const pulMatch = text.match(/脈搏[：:](\d+)/);
+    // 解析數值（多種格式相容）
+    const sysMatch = text.match(/SYS[：:\s]*(\d+)/i) || text.match(/高壓[：:\s]*(\d+)/) || text.match(/最高[：:\s]*(\d+)/) || text.match(/收縮[：:\s]*(\d+)/);
+    const diaMatch = text.match(/DIA[：:\s]*(\d+)/i) || text.match(/低壓[：:\s]*(\d+)/) || text.match(/最低[：:\s]*(\d+)/) || text.match(/舒張[：:\s]*(\d+)/);
+    const pulMatch = text.match(/PUL[：:\s]*(\d+)/i) || text.match(/脈搏[：:\s]*(\d+)/) || text.match(/脈拍[：:\s]*(\d+)/) || text.match(/心跳[：:\s]*(\d+)/) || text.match(/PR[：:\s]*(\d+)/i);
 
-    if (!sysMatch || !diaMatch || !pulMatch) throw new Error('識別格式有誤，請重新拍攝');
+    if (!sysMatch || !diaMatch || !pulMatch) {
+      console.log('Gemini 回傳：', text);
+      throw new Error('識別格式有誤，請重新拍攝（Gemini 回應：' + text.slice(0,50) + '）');
+    }
 
     currentSys = parseInt(sysMatch[1]);
     currentDia = parseInt(diaMatch[1]);
@@ -567,6 +585,24 @@ function showResult() {
 
   document.getElementById('bp-result').style.display = 'block';
   document.getElementById('note-input').value = '';
+}
+
+// ── 儲存照片到手機相簿 ──
+function savePhotoToAlbum(dataUrl) {
+  try {
+    // 在 iOS Safari 上，建立 <a> 元素觸發下載會儲存到相簿
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = `血壓_${new Date().toLocaleString('zh-TW',{
+      year:'numeric', month:'2-digit', day:'2-digit',
+      hour:'2-digit', minute:'2-digit', second:'2-digit'
+    }).replace(/[/:]/g,'-').replace(/\s/g,'_')}.jpg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  } catch(e) {
+    console.log('[savePhoto] 無法儲存：', e.message);
+  }
 }
 
 function confirmRecord() {
