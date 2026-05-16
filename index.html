@@ -322,20 +322,33 @@
 
   <div class="card">
     <div class="card-title">拍攝血壓計</div>
+    <!-- 相機串流畫面 -->
+    <div id="camera-stream-area" style="display:none;margin-bottom:12px">
+      <video id="camera-stream" autoplay playsinline muted
+        style="width:100%;border-radius:12px;background:#000;max-height:260px;object-fit:cover"></video>
+      <div style="display:flex;gap:10px;margin-top:10px">
+        <button class="capture-btn" onclick="captureFromStream()"
+          style="flex:2">
+          <span class="icon">⭕</span><span>拍攝</span>
+        </button>
+        <button onclick="stopCamera()"
+          style="flex:1;padding:12px;background:rgba(100,100,100,0.5);border:none;border-radius:12px;color:white;font-size:0.85rem;cursor:pointer;font-family:Georgia,serif">
+          取消
+        </button>
+      </div>
+    </div>
+
+    <!-- 主按鈕 -->
     <div style="display:flex;gap:10px">
-      <button class="capture-btn" style="flex:2" onclick="document.getElementById('camera-input').click()">
-        <span class="icon">📷</span>
-        <span>拍照量測</span>
+      <button class="capture-btn" style="flex:2" onclick="startCamera()">
+        <span class="icon">📷</span><span>拍照量測</span>
       </button>
-      <button class="capture-btn" style="flex:1;background:linear-gradient(135deg,#2b6cb0,#2c5282);box-shadow:0 4px 20px rgba(43,108,176,0.35)" onclick="document.getElementById('upload-input').click()">
-        <span class="icon" style="font-size:1.2rem">🖼️</span>
-        <span style="font-size:0.82rem">上傳</span>
+      <button class="capture-btn" onclick="document.getElementById('upload-input').click()"
+        style="flex:1;background:linear-gradient(135deg,#2b6cb0,#2c5282);box-shadow:0 4px 20px rgba(43,108,176,0.35)">
+        <span class="icon" style="font-size:1.1rem">🖼️</span><span style="font-size:0.80rem">上傳</span>
       </button>
     </div>
-    <!-- 拍照：強制開相機 -->
-    <input type="file" id="camera-input" accept="image/*" capture="environment" onchange="handlePhoto(this)">
-    <!-- 上傳：從相簿選取 -->
-    <input type="file" id="upload-input" accept="image/*" onchange="handlePhoto(this)">
+    <input type="file" id="upload-input" accept="image/*" onchange="handleUpload(this)" style="display:none">
   </div>
 
   <!-- 載入中 -->
@@ -473,76 +486,141 @@ function switchTab(tab) {
 // ── 拍照處理 ──
 let currentSys = 0, currentDia = 0, currentPul = 0, currentConfidence = "high";
 
-async function handlePhoto(input) {
-  const file = input.files[0];
-  if (!file) return;
+// handlePhoto replaced by startCamera/handleUpload/sendToAPI
+
+// ── getUserMedia 相機串流 ──
+let cameraStream = null;
+
+async function startCamera() {
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width:  { ideal: 1920 },
+        height: { ideal: 1080 }
+      },
+      audio: false
+    });
+    const video = document.getElementById('camera-stream');
+    video.srcObject = cameraStream;
+    document.getElementById('camera-stream-area').style.display = 'block';
+  } catch(e) {
+    alert('無法開啟相機，請使用「上傳」功能選取照片。');
+  }
+}
+
+function stopCamera() {
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(t => t.stop());
+    cameraStream = null;
+  }
+  document.getElementById('camera-stream-area').style.display = 'none';
+}
+
+function captureFromStream() {
+  const video = document.getElementById('camera-stream');
+  const canvas = document.createElement('canvas');
+  canvas.width  = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  stopCamera();
+
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+  const b64 = dataUrl.split(',')[1];
 
   // 顯示預覽
-  const reader = new FileReader();
-  reader.onload = async e => {
-    const dataUrl = e.target.result;
-    document.getElementById('preview-img').src = dataUrl;
-    document.getElementById('preview-img').style.display = 'block';
-
-    // 若是拍照，自動儲存到手機
-    const isCameraCapture = document.getElementById('camera-input').files.length > 0 &&
-                             document.getElementById('camera-input').files[0] === file;
-    if (isCameraCapture) savePhotoToAlbum(dataUrl);
-  };
-  reader.readAsDataURL(file);
-
-  // 顯示載入
+  document.getElementById('preview-img').src = dataUrl;
+  document.getElementById('preview-img').style.display = 'block';
   document.getElementById('result-card').style.display = 'block';
   document.getElementById('loading').style.display = 'block';
   document.getElementById('loading').innerHTML = `
     <div class="spinner"></div>
-    <div>AI 識別中（雙重驗證，約 10-20 秒）...</div>
+    <div>AI 識別中（約 10-20 秒）...</div>
     <div style="font-size:0.72rem;margin-top:6px;opacity:0.7">正在傳送圖片到伺服器...</div>
   `;
   document.getElementById('bp-result').style.display = 'none';
 
-  // 轉 base64
-  const b64 = await fileToBase64(file);
+  sendToAPI(b64, 'image/jpeg');
+}
 
+async function handleUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    document.getElementById('preview-img').src = e.target.result;
+    document.getElementById('preview-img').style.display = 'block';
+  };
+  reader.readAsDataURL(file);
+
+  document.getElementById('result-card').style.display = 'block';
+  document.getElementById('loading').style.display = 'block';
+  document.getElementById('loading').innerHTML = `
+    <div class="spinner"></div>
+    <div>AI 識別中（約 10-20 秒）...</div>
+    <div style="font-size:0.72rem;margin-top:6px;opacity:0.7">正在傳送圖片到伺服器...</div>
+  `;
+  document.getElementById('bp-result').style.display = 'none';
+
+  const b64 = await fileToBase64(file);
+  sendToAPI(b64, 'image/jpeg');
+  input.value = '';
+}
+
+async function sendToAPI(b64, mimeType) {
   try {
-    // 送到後端（繞過 CORS）
     const resp = await fetch(`${API_BASE}/api/read_bp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        image: b64,
-        type: file.type || 'image/jpeg',
-      })
+      body: JSON.stringify({ image: b64, type: mimeType })
     });
-
     const data = await resp.json();
-
-    if (!data.success) {
-      throw new Error(data.error || '識別失敗，請重新拍攝');
-    }
+    if (!data.success) throw new Error(data.error || '識別失敗，請重新拍攝');
 
     currentSys = data.sys;
     currentDia = data.dia;
     currentPul = data.pul;
     currentConfidence = data.confidence || 'high';
-
     showResult();
   } catch(e) {
     document.getElementById('loading').style.display = 'none';
-    document.getElementById('loading').innerHTML = `<div class="spinner"></div>AI 識別中...`;
+    document.getElementById('loading').innerHTML = `<div class="spinner"></div>AI 識別中，請稍候...`;
     alert('⚠️ ' + e.message);
     document.getElementById('result-card').style.display = 'none';
   }
-
-  input.value = '';
 }
 
 function fileToBase64(file) {
+  // 強制轉成 JPEG（支援所有格式包含 DNG/HEIC）
   return new Promise(resolve => {
-    const r = new FileReader();
-    r.onload = e => resolve(e.target.result.split(',')[1]);
-    r.readAsDataURL(file);
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        // 最大 1920px，保持比例
+        const maxSize = 1920;
+        let w = img.width, h = img.height;
+        if (w > maxSize || h > maxSize) {
+          if (w > h) { h = Math.round(h * maxSize / w); w = maxSize; }
+          else       { w = Math.round(w * maxSize / h); h = maxSize; }
+        }
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        // 轉成 JPEG base64
+        const jpegB64 = canvas.toDataURL('image/jpeg', 0.92).split(',')[1];
+        resolve(jpegB64);
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
   });
+}
+
+function getImageType(file) {
+  // 不管原始格式，一律回傳 image/jpeg（因為已轉換）
+  return 'image/jpeg';
 }
 
 function showResult() {
