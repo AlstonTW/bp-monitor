@@ -438,13 +438,18 @@
   </div>
 
   <div class="card">
-    <div class="card-title">寫入 Apple Health</div>
-    <p style="font-size:0.80rem;color:var(--dim);line-height:1.7;margin-bottom:16px">
-      需要先在 iPhone「捷徑」APP 安裝血壓記錄捷徑，安裝後點下方按鈕。
+    <div class="card-title">⏰ 每日量測提醒</div>
+    <p style="font-size:0.80rem;color:var(--dim);line-height:1.7;margin-bottom:12px">
+      設定每天提醒量血壓的時間，需先允許通知權限。
     </p>
-    <button class="export-btn" onclick="openHealthShortcut()" style="background:#ff2d55">
-      ❤️ 開啟 Apple Health 捷徑
-    </button>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+      <input type="time" id="reminder-time" value="07:30"
+        style="flex:1;padding:10px;border:1px solid var(--border);border-radius:10px;font-size:1rem;background:var(--bg);color:var(--text)">
+      <button class="export-btn" onclick="setReminder()" style="flex:1;margin-bottom:0;padding:11px">
+        設定提醒
+      </button>
+    </div>
+    <div id="reminder-status" style="font-size:0.75rem;color:var(--dim);text-align:center"></div>
   </div>
 
   <div class="card" id="preview-report-card">
@@ -738,9 +743,6 @@ function confirmRecord() {
     `高壓 ${currentSys} / 低壓 ${currentDia} / 脈搏 ${currentPul}`;
   document.getElementById('success-overlay').classList.add('show');
 
-  // 嘗試觸發 Apple Health 捷徑
-  triggerHealthShortcut(currentSys, currentDia, currentPul);
-
   // 重置
   setTimeout(() => {
     document.getElementById('result-card').style.display = 'none';
@@ -797,7 +799,7 @@ function renderHistory() {
   document.getElementById('total-count').textContent = records.length;
 
   // 列表
-  listEl.innerHTML = records.slice(0,30).map(r => `
+  listEl.innerHTML = records.slice(0,30).map((r,i) => `
     <div class="history-item">
       <div class="history-dot" style="background:${getBpColor(r.sys,r.dia)}"></div>
       <div style="flex:1">
@@ -806,6 +808,10 @@ function renderHistory() {
         ${r.note ? `<div class="history-note">${r.note}</div>` : ''}
       </div>
       <div class="history-pulse">💓 ${r.pul}</div>
+      <button onclick="deleteRecord(${r.id})"
+        style="flex-shrink:0;margin-left:8px;padding:4px 8px;background:rgba(229,62,62,0.1);border:1px solid rgba(229,62,62,0.3);border-radius:6px;color:#e53e3e;font-size:0.65rem;cursor:pointer">
+        🗑️
+      </button>
     </div>
   `).join('');
 
@@ -865,6 +871,15 @@ function renderChart(records) {
   });
 }
 
+// ── 刪除紀錄 ──
+function deleteRecord(id) {
+  if (!confirm('確定刪除這筆紀錄？')) return;
+  const records = loadRecords().filter(r => r.id !== id);
+  saveRecords(records);
+  renderHistory();
+  showToast('🗑️ 已刪除');
+}
+
 // ── 匯出報告 ──
 function generateReportText() {
   const records = loadRecords();
@@ -916,8 +931,82 @@ function exportCSV() {
   URL.revokeObjectURL(url);
 }
 
+// ── 提醒通知功能 ──
+async function setReminder() {
+  const timeInput = document.getElementById('reminder-time').value;
+  const statusEl  = document.getElementById('reminder-status');
+  if (!timeInput) { alert('請選擇提醒時間'); return; }
+
+  // 請求通知權限
+  if (!('Notification' in window)) {
+    statusEl.textContent = '❌ 此瀏覽器不支援通知功能';
+    return;
+  }
+
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') {
+    statusEl.textContent = '❌ 未允許通知權限，請到手機設定開啟';
+    return;
+  }
+
+  // 儲存提醒時間
+  localStorage.setItem('bp_reminder_time', timeInput);
+
+  // 計算下次提醒時間
+  scheduleNextReminder(timeInput);
+
+  statusEl.textContent = `✅ 已設定每天 ${timeInput} 提醒量血壓`;
+  statusEl.style.color = 'var(--green)';
+}
+
+function scheduleNextReminder(timeStr) {
+  // 清除舊的計時器
+  const oldTimer = localStorage.getItem('bp_reminder_timer');
+  if (oldTimer) clearTimeout(parseInt(oldTimer));
+
+  const [h, m] = timeStr.split(':').map(Number);
+  const now = new Date();
+  const next = new Date();
+  next.setHours(h, m, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1); // 若已過今天就設明天
+
+  const delay = next - now;
+  const timer = setTimeout(() => {
+    showReminderNotification();
+    // 每24小時重複
+    setInterval(showReminderNotification, 24 * 60 * 60 * 1000);
+  }, delay);
+
+  localStorage.setItem('bp_reminder_timer', timer.toString());
+}
+
+function showReminderNotification() {
+  if (Notification.permission === 'granted') {
+    new Notification('💊 血壓量測提醒', {
+      body: '記得量血壓了！保持健康記錄的好習慣 ❤️',
+      icon: 'https://alstontw.github.io/bp-monitor/icon.png',
+      badge: 'https://alstontw.github.io/bp-monitor/icon.png',
+    });
+  }
+}
+
+function initReminder() {
+  const savedTime = localStorage.getItem('bp_reminder_time');
+  const statusEl  = document.getElementById('reminder-status');
+  if (savedTime) {
+    document.getElementById('reminder-time').value = savedTime;
+    if (Notification.permission === 'granted') {
+      scheduleNextReminder(savedTime);
+      if (statusEl) statusEl.textContent = `✅ 提醒已設定：每天 ${savedTime}`;
+    } else {
+      if (statusEl) statusEl.textContent = `⚠️ 已設定 ${savedTime}，請允許通知權限`;
+    }
+  }
+}
+
 // 初始化
 renderHistory();
+initReminder();
 </script>
 </body>
 </html>
